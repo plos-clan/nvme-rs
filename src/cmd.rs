@@ -1,13 +1,14 @@
-#[derive(Debug, Default, Clone, Copy)]
+/// A submission queue entry.
+#[derive(Clone, Copy, Debug, Default)]
 #[repr(C, packed)]
 pub(crate) struct Command {
     /// Opcode
     opcode: u8,
-    /// Flags; FUSE (2 bits) | Reserved (4 bits) | PSDT (2 bits)
+    /// Flags
     flags: u8,
     /// Command ID
     cmd_id: u16,
-    /// Namespace ID
+    /// Namespace identifier
     ns_id: u32,
     /// Reserved
     _rsvd: u64,

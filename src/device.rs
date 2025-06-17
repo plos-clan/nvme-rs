@@ -181,8 +181,8 @@ impl<A: Allocator> Device<A> {
             spin_loop();
         }
 
-        device.set_reg::<u64>(Register::ASQ, device.admin_sq.address() as u64);
-        device.set_reg::<u64>(Register::ACQ, device.admin_cq.address() as u64);
+        device.set_reg::<u64>(Register::ASQ, device.admin_sq.data.phys_addr as u64);
+        device.set_reg::<u64>(Register::ACQ, device.admin_cq.data.phys_addr as u64);
         let aqa = (ADMIN_QUEUE_SIZE as u32 - 1) << 16 | (ADMIN_QUEUE_SIZE as u32 - 1);
         device.set_reg::<u32>(Register::AQA, aqa);
 
@@ -341,7 +341,7 @@ impl<A: Allocator> Device<A> {
         self.exec_admin(Command::create_completion_queue(
             self.admin_sq.tail as u16,
             *queue_id,
-            comp_queue.address(),
+            comp_queue.data.phys_addr,
             (len - 1) as u16,
         ))?;
 
@@ -349,7 +349,7 @@ impl<A: Allocator> Device<A> {
         self.exec_admin(Command::create_submission_queue(
             self.admin_sq.tail as u16,
             *queue_id,
-            sub_queue.address(),
+            sub_queue.data.phys_addr,
             (len - 1) as u16,
             *queue_id,
         ))?;

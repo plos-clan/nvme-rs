@@ -48,7 +48,7 @@ pub trait Allocator {
 pub(crate) struct Dma<T> {
     pub addr: *mut T,
     pub phys_addr: usize,
-    count: usize,
+    pub count: usize,
 }
 
 unsafe impl<T> Send for Dma<T> {}
@@ -196,20 +196,23 @@ impl PrpManager {
         address: usize,
         bytes: usize,
     ) -> Result<PrpResult> {
-        let count = ((address & 0xfff) + bytes).div_ceil(4096);
-
-        let prp1 = allocator.translate(address);
-        let prp2_start = allocator.translate(address + 4096);
-
         if (address & 0x3) != 0 {
             return Err(Error::NotAlignedToDword);
         }
+
+        let prp1 = allocator.translate(address);
+        let count = ((address & 0xfff) + bytes).div_ceil(4096);
+
         if count == 1 {
             return Ok(PrpResult::Single(prp1));
         }
+
         if (address & 0xfff) != 0 {
             return Err(Error::NotAlignedToPage);
         }
+
+        let prp2_start = allocator.translate(address + 4096);
+
         if count == 2 {
             return Ok(PrpResult::Double(prp1, prp2_start));
         }

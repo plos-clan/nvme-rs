@@ -22,13 +22,11 @@ pub(crate) struct Completion {
 /// waiting to be processed by the NVMe controller.
 pub(crate) struct SubQueue {
     /// The command slots
-    slots: Dma<Command>,
+    pub data: Dma<Command>,
     /// Current head position of the queue
     pub head: usize,
     /// Current tail position of the queue
     pub tail: usize,
-    /// Length of the queue
-    len: usize,
 }
 
 impl SubQueue {
@@ -37,18 +35,10 @@ impl SubQueue {
     /// The allocator should implement the `Allocator` trait.
     pub fn new<A: Allocator>(len: usize, allocator: &A) -> Self {
         Self {
-            slots: Dma::allocate(len, allocator),
+            data: Dma::allocate(len, allocator),
             head: 0,
             tail: 0,
-            len,
         }
-    }
-
-    /// Returns the physical address of the submission queue.
-    ///
-    /// It is usually used to configure the admin queues.
-    pub fn address(&self) -> usize {
-        self.slots.phys_addr
     }
 
     /// Pushes a command to the submission queue
@@ -67,11 +57,11 @@ impl SubQueue {
     ///
     /// It does not block if the queue is full.
     pub fn try_push(&mut self, entry: Command) -> Result<usize> {
-        if self.head == (self.tail + 1) % self.len {
+        if self.head == (self.tail + 1) % self.data.count {
             Err(Error::SubQueueFull)
         } else {
-            self.slots[self.tail] = entry;
-            self.tail = (self.tail + 1) % self.len;
+            self.data[self.tail] = entry;
+            self.tail = (self.tail + 1) % self.data.count;
             Ok(self.tail)
         }
     }
@@ -83,13 +73,11 @@ impl SubQueue {
 /// status of processed commands from the submission queue.
 pub(crate) struct CompQueue {
     /// The completion slots
-    slots: Dma<Completion>,
+    pub data: Dma<Completion>,
     /// Current head position of the queue
-    head: usize,
+    pub head: usize,
     /// Used to determine if an entry is valid
-    phase: bool,
-    /// Length of the queue
-    len: usize,
+    pub phase: bool,
 }
 
 impl CompQueue {
@@ -98,18 +86,10 @@ impl CompQueue {
     /// The allocator should implement the `Allocator` trait.
     pub fn new<A: Allocator>(len: usize, allocator: &A) -> Self {
         Self {
-            slots: Dma::allocate(len, allocator),
+            data: Dma::allocate(len, allocator),
             head: 0,
             phase: true,
-            len,
         }
-    }
-
-    /// Returns the physical address of the submission queue.
-    ///
-    /// It is usually used to configure the admin queues.
-    pub fn address(&self) -> usize {
-        self.slots.phys_addr
     }
 
     /// Pops a completion entry from the queue.
@@ -129,10 +109,10 @@ impl CompQueue {
     /// It returns the final head position and the completion entry.
     pub fn pop_n(&mut self, step: usize) -> (usize, Completion) {
         self.head += step - 1;
-        if self.head >= self.len {
+        if self.head >= self.data.count {
             self.phase = !self.phase;
         }
-        self.head %= self.len;
+        self.head %= self.data.count;
         self.pop()
     }
 
@@ -142,10 +122,10 @@ impl CompQueue {
     /// If the entry is valid (based on the phase), it returns the entry
     /// with the new head position.
     pub fn try_pop(&mut self) -> Option<(usize, Completion)> {
-        let entry = &self.slots[self.head];
+        let entry = &self.data[self.head];
 
         (((entry.status & 1) == 1) == self.phase).then(|| {
-            self.head = (self.head + 1) % self.len;
+            self.head = (self.head + 1) % self.data.count;
             if self.head == 0 {
                 self.phase = !self.phase;
             }

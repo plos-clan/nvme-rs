@@ -1,4 +1,4 @@
-# NVMe
+# nvme-rs
 
 A no-std compatible NVMe driver for embedded and operating system development.
 
@@ -41,7 +41,7 @@ pub fn nvme_test() -> Result<(), Box<dyn core::error::Error>> {
     let namespace = &namespaces[0];
 
     // You can get the block size and count of the namespace
-    let _disk_size = namespace.block_count * namespace.block_size;
+    let _disk_size = namespace.block_count() * namespace.block_size();
 
     // Create a I/O queue pair to perform IO operations
     let mut qpair = controller.create_io_queue_pair(namespacem, 64)?;
