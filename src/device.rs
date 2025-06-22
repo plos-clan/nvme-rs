@@ -1,12 +1,12 @@
-use alloc::sync::Arc;
 use alloc::string::{String, ToString};
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::hint::spin_loop;
 
 use crate::cmd::{Command, IdentifyType};
 use crate::error::{Error, Result};
 use crate::io::{IoQueueId, IoQueuePair};
-use crate::memory::{Dma, Allocator};
+use crate::memory::{Allocator, Dma};
 use crate::queues::{CompQueue, Completion, SubQueue};
 
 /// Default size of an admin queue.
@@ -110,6 +110,8 @@ pub struct ControllerData {
     pub min_pagesize: usize,
     /// Maximum queue entries
     pub max_queue_entries: u16,
+    /// Host memory buffer size (in bytes)
+    pub hmb_size: u32,
 }
 
 /// A structure representing an NVMe namespace.
@@ -172,9 +174,9 @@ impl<A: Allocator> Device<A> {
 
         let cap = device.get_reg::<u64>(Register::CAP);
         let doorbell_stride = (cap >> 32) as u8 & 0xF;
-        device.doorbell_helper = DoorbellHelper::new(address, doorbell_stride);
         device.data.min_pagesize = 1 << (((cap >> 48) as u8 & 0xF) + 12);
         device.data.max_queue_entries = (cap & 0x7FFF) as u16 + 1;
+        device.doorbell_helper = DoorbellHelper::new(address, doorbell_stride);
 
         device.set_reg::<u32>(Register::CC, device.get_reg::<u32>(Register::CC) & !1);
         while device.get_reg::<u32>(Register::CSTS) & 1 == 1 {
@@ -201,10 +203,8 @@ impl<A: Allocator> Device<A> {
         ))?;
 
         let extract_string = |start: usize, end: usize| -> String {
-            device.admin_buffer[start..end]
-                .iter()
-                .flat_map(|&b| char::from_u32(b as u32))
-                .collect::<String>()
+            str::from_utf8(&device.admin_buffer[start..end])
+                .unwrap_or_default()
                 .trim()
                 .to_string()
         };
@@ -213,7 +213,16 @@ impl<A: Allocator> Device<A> {
         device.data.model_number = extract_string(24, 64);
         device.data.firmware_revision = extract_string(64, 72);
 
-        let max_pages = 1 << device.admin_buffer.as_ref()[77];
+        let extract_u32_number = |start: usize, end: usize| -> u32 {
+            let bytes = &device.admin_buffer[start..end];
+            u32::from_le_bytes(bytes.try_into().unwrap())
+        };
+
+        let hmpre = extract_u32_number(272, 276);
+        let hmmin = extract_u32_number(276, 280);
+        device.data.hmb_size = if hmpre != 0 { hmmin * 4096 } else { 0 };
+
+        let max_pages = 1 << device.admin_buffer[77];
         device.data.max_transfer_size = max_pages as usize * device.data.min_pagesize;
 
         Ok(device)

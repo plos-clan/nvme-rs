@@ -1,3 +1,4 @@
+use alloc::collections::vec_deque::VecDeque;
 use alloc::sync::Arc;
 use core::ops::Deref;
 use core::sync::atomic::{AtomicU16, Ordering};
@@ -43,6 +44,7 @@ pub struct IoQueuePair<A: Allocator> {
     comp_queue: CompQueue,
     prp_manager: PrpManager,
     max_transfer_size: usize,
+    submitted: VecDeque<PrpResult>,
 }
 
 impl<A: Allocator> IoQueuePair<A> {
@@ -64,57 +66,13 @@ impl<A: Allocator> IoQueuePair<A> {
             prp_manager: Default::default(),
             allocator,
             max_transfer_size,
+            submitted: Default::default(),
         }
     }
 }
 
 impl<A: Allocator> IoQueuePair<A> {
-    fn submit_io(
-        &mut self,
-        bytes: usize,
-        lba: u64,
-        address: usize,
-        write: bool,
-    ) -> Result<PrpResult> {
-        let prp_result = self
-            .prp_manager
-            .create(self.allocator.as_ref(), address, bytes)?;
-
-        let prp = prp_result.get_prp();
-        let blocks = bytes as u64 / self.namespace.block_size();
-
-        let command = Command::read_write(
-            *self.id << 10 | self.sub_queue.tail as u16,
-            self.namespace.id(),
-            lba,
-            blocks as u16 - 1,
-            [prp.0 as u64, prp.1 as u64],
-            write,
-        );
-
-        let tail = self.sub_queue.try_push(command)?;
-        self.doorbell_helper
-            .write(Doorbell::SubTail(*self.id), tail as u32);
-
-        Ok(prp_result)
-    }
-
-    fn complete_io(&mut self, step: u64) -> Result<u16> {
-        let (tail, entry) = self.comp_queue.pop_n(step as usize);
-        self.doorbell_helper
-            .write(Doorbell::CompHead(*self.id), tail as u32);
-
-        let status = (entry.status >> 1) & 0xff;
-        if status != 0 {
-            return Err(Error::CommandFailed(status));
-        }
-
-        Ok(entry.sq_head)
-    }
-}
-
-impl<A: Allocator> IoQueuePair<A> {
-    fn handle_read_write(
+    fn submit_and_track(
         &mut self,
         bytes: usize,
         lba: u64,
@@ -128,10 +86,65 @@ impl<A: Allocator> IoQueuePair<A> {
             return Err(Error::InvalidBufferSize);
         }
 
-        let prp_result = self.submit_io(bytes, lba, address, write)?;
-        self.sub_queue.head = self.complete_io(1)? as usize;
-        self.prp_manager
-            .release(prp_result, self.allocator.as_ref());
+        let prp_result = self
+            .prp_manager
+            .create(self.allocator.as_ref(), address, bytes)?;
+
+        let prp = prp_result.get_prp();
+        let blocks = bytes as u64 / self.namespace.block_size();
+
+        let command = Command::read_write(
+            self.sub_queue.tail as u16,
+            self.namespace.id(),
+            lba,
+            blocks as u16 - 1,
+            [prp.0 as u64, prp.1 as u64],
+            write,
+        );
+
+        match self.sub_queue.try_push(command) {
+            Ok(new_tail) => {
+                self.doorbell_helper
+                    .write(Doorbell::SubTail(*self.id), new_tail as u32);
+                self.submitted.push_back(prp_result);
+                Ok(())
+            }
+            Err(err) => {
+                self.prp_manager
+                    .release(prp_result, self.allocator.as_ref());
+                Err(err)
+            }
+        }
+    }
+}
+
+impl<A: Allocator> IoQueuePair<A> {
+    /// Waits for all in-flight I/O operations to complete.
+    ///
+    /// This function will block until every command submitted via
+    /// `read` or `write` has been completed by the device. It also handles
+    /// resource cleanup for the completed requests.
+    pub fn flush(&mut self) -> Result<()> {
+        let num_to_complete = self.submitted.len();
+
+        if num_to_complete == 0 {
+            return Ok(());
+        }
+
+        let (tail, entry) = self.comp_queue.pop_n(num_to_complete);
+        let doorbell = Doorbell::CompHead(*self.id);
+        self.doorbell_helper.write(doorbell, tail as u32);
+
+        while let Some(prp_result) = self.submitted.pop_front() {
+            self.prp_manager
+                .release(prp_result, self.allocator.as_ref());
+        }
+
+        let status = (entry.status >> 1) & 0xff;
+        if status != 0 {
+            return Err(Error::CommandFailed(status));
+        }
+        self.sub_queue.head = entry.sq_head as usize;
 
         Ok(())
     }
@@ -145,17 +158,21 @@ impl<A: Allocator> IoQueuePair<A> {
         self.id
     }
 
-    /// Reads bytes from given LBA to the destination address.
+    /// Submits a read request to the queue without blocking.
     ///
-    /// This function will block and the queue depth is always 1.
+    /// This function adds a read command to the submission queue and returns immediately.
+    /// The actual I/O operation happens in the background.
+    /// Call `flush()` to wait for all submitted requests to complete.
+    ///
+    /// Returns an error if the submission queue is full.
     pub fn read(&mut self, dest: *mut u8, bytes: usize, lba: u64) -> Result<()> {
-        self.handle_read_write(bytes, lba, dest as usize, false)
+        self.submit_and_track(bytes, lba, dest as usize, false)
     }
 
-    /// Writes bytes from the source address to the given LBA.
+    /// Submits a write request to the queue without blocking.
     ///
-    /// This function will block and the queue depth is always 1.
+    /// See `read` for more details.
     pub fn write(&mut self, src: *const u8, bytes: usize, lba: u64) -> Result<()> {
-        self.handle_read_write(bytes, lba, src as usize, true)
+        self.submit_and_track(bytes, lba, src as usize, true)
     }
 }

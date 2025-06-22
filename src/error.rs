@@ -48,7 +48,7 @@ impl Display for Error {
                 write!(f, "The queue size exceeds the maximum queue entry size")
             }
             Error::CommandFailed(code) => {
-                write!(f, "Command failed with status code: {code}")
+                write!(f, "Command failed with status code: {code:x}")
             }
         }
     }

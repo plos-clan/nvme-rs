@@ -2,7 +2,7 @@ use core::hint::spin_loop;
 
 use crate::cmd::Command;
 use crate::error::{Error, Result};
-use crate::memory::{Dma, Allocator};
+use crate::memory::{Allocator, Dma};
 
 /// Completion entry in the NVMe completion queue.
 #[derive(Debug, Clone)]
